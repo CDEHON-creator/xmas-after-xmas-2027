@@ -19,6 +19,27 @@
                     fontFamily: { sans: ['Inter', 'sans-serif'] }
                 }
             }
+        };
+
+        // Smart fallback for banner filename/case variations (defined synchronously before <img> loads)
+        const BANNER_FALLBACKS = [
+            'banniere.JPG',
+            'banniere.jpeg',
+            'banniere.JPEG',
+            'banniere.png',
+            'Banniere.jpg',
+            'Banniere.JPG',
+            'Banniere.jpeg',
+            'watermarked_img_15465700304024355708.jpg'
+        ];
+        let bannerFallbackIndex = 0;
+        function handleBannerError(img) {
+            if (bannerFallbackIndex < BANNER_FALLBACKS.length) {
+                img.src = BANNER_FALLBACKS[bannerFallbackIndex++];
+            } else {
+                img.onerror = null;
+                img.classList.add('hidden');
+            }
         }
     </script>
     <style>
@@ -51,6 +72,17 @@
                 </button>
             </div>
             <p class="text-zinc-400 mb-6 text-sm">Identifie-toi pour accéder au cockpit du weekend.</p>
+
+            <!-- Quick Reconnect for existing members (anti-duplicate across devices) -->
+            <div id="quick-reconnect-box" class="hidden mb-5 p-3.5 rounded-xl bg-teal-950/40 border border-teal-800/60">
+                <p class="text-[11px] font-semibold text-teal-400 uppercase tracking-wide mb-2 flex items-center gap-1.5">
+                    <i class="fa-solid fa-rotate-right"></i> Déjà inscrite sur un autre appareil ?
+                </p>
+                <p class="text-xs text-zinc-400 mb-2.5">Clique sur ton prénom pour te reconnecter sans créer de doublon :</p>
+                <div id="quick-reconnect-list" class="flex flex-wrap gap-2">
+                    <!-- Existing members buttons injected here -->
+                </div>
+            </div>
             
             <div class="space-y-4">
                 <div>
@@ -98,6 +130,9 @@
             <button id="btn-save-profile" class="w-full mt-7 bg-teal-700 hover:bg-teal-600 text-white font-bold py-3.5 rounded-xl shadow-lg transition-colors flex justify-center items-center gap-2">
                 <i class="fa-solid fa-house"></i> Accéder au Cockpit
             </button>
+            <button id="btn-logout-profile" type="button" onclick="logoutProfile()" class="hidden w-full mt-3 text-xs text-zinc-400 hover:text-zinc-200 py-2 transition-colors">
+                <i class="fa-solid fa-right-from-bracket mr-1"></i> Changer de profil sur cet appareil
+            </button>
         </div>
     </div>
 
@@ -130,10 +165,11 @@
         <main class="flex-1 p-4 sm:p-6 w-full max-w-5xl mx-auto space-y-6 lg:space-y-8 pb-16">
             
             <!-- Banner Image (Coupes de champagne & Neige) -->
-            <div class="w-full h-52 sm:h-64 md:h-72 rounded-2xl overflow-hidden shadow-xl border border-zinc-700/80 relative group">
+            <div class="w-full h-52 sm:h-64 md:h-72 rounded-2xl overflow-hidden shadow-xl border border-zinc-700/80 relative group bg-gradient-to-br from-zinc-800 via-teal-950 to-zinc-900">
                 <img 
+                    id="banner-img"
                     src="banniere.jpg" 
-                    onerror="this.onerror=null; this.src='https://placehold.co/1200x450/1f2937/2dd4bf?text=XMAS+AFTER+XMAS+2027+%E2%9D%84%EF%B8%8F+%F0%9F%A5%82';"
+                    onerror="handleBannerError(this)"
                     alt="Coupes de champagne dans la neige" 
                     class="w-full h-full object-cover object-center group-hover:scale-105 transition-transform duration-700"
                 >
@@ -488,6 +524,11 @@
                 .replace(/'/g, '&#39;');
         }
 
+        // Deterministic profile ID based on email (prevents duplicates across phone/PC)
+        function getProfileIdFromEmail(email) {
+            return 'user_' + String(email || '').trim().toLowerCase().replace(/[^a-z0-9]/g, '_');
+        }
+
         // Firebase Initialization
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
@@ -498,6 +539,7 @@
         const tasksRef = collection(db, 'tasks');
 
         let currentUser = null;
+        let currentProfileId = localStorage.getItem('xmas2027_profile_id') || null;
         let myProfile = null;
         let listenersStarted = false;
 
@@ -553,13 +595,16 @@
 
         window.openProfileModal = function(canClose = false) {
             btnCloseModal.classList.toggle('hidden', !canClose);
+            document.getElementById('btn-logout-profile').classList.toggle('hidden', !myProfile);
+            renderQuickReconnect();
+
             if (myProfile) {
                 document.getElementById('p-name').value = myProfile.name || '';
                 document.getElementById('p-email').value = myProfile.email || '';
                 document.getElementById('p-deposit').value = myProfile.deposit || '';
                 document.getElementById('p-car-check').checked = !!myProfile.hasCar;
                 pCarDetails.classList.toggle('hidden', !myProfile.hasCar);
-                const myCar = allCarsCache.find(c => c.driverId === currentUser?.uid);
+                const myCar = allCarsCache.find(c => c.driverId === currentProfileId);
                 if (myCar) {
                     document.getElementById('p-seats').value = myCar.totalSeats || 3;
                     document.getElementById('p-tires').checked = !!myCar.tires;
@@ -573,6 +618,44 @@
             }
             authModal.classList.remove('hidden');
         };
+
+        window.logoutProfile = function() {
+            localStorage.removeItem('xmas2027_profile_id');
+            currentProfileId = null;
+            myProfile = null;
+            appContent.classList.add('hidden');
+            openProfileModal(false);
+            showToast("Déconnectée de cet appareil.");
+        };
+
+        window.reconnectAs = function(profileId) {
+            const found = allMembersCache.find(m => m.id === profileId);
+            if (!found) return;
+            currentProfileId = found.id;
+            myProfile = found;
+            localStorage.setItem('xmas2027_profile_id', currentProfileId);
+            startDashboard();
+            renderMembers(allMembersCache);
+            renderCars(allCarsCache);
+            renderTasks(allTasksCache);
+            showToast(`Re-bonjour ${found.name} ! Profil synchronisé 🥂`);
+        };
+
+        function renderQuickReconnect() {
+            const box = document.getElementById('quick-reconnect-box');
+            const list = document.getElementById('quick-reconnect-list');
+            // Show quick reconnect only when not yet logged in and there are existing members
+            if (myProfile || allMembersCache.length === 0) {
+                box.classList.add('hidden');
+                return;
+            }
+            box.classList.remove('hidden');
+            list.innerHTML = allMembersCache.map(m => `
+                <button type="button" onclick="reconnectAs('${escapeHtml(m.id)}')" class="text-xs bg-zinc-800 hover:bg-teal-700 text-zinc-200 hover:text-white px-3 py-1.5 rounded-lg border border-zinc-700 hover:border-teal-500 transition-colors font-medium">
+                    ${escapeHtml(m.name)}
+                </button>
+            `).join('');
+        }
 
         // --- INITIALIZATION ---
         async function initApp() {
@@ -588,19 +671,31 @@
                 }
 
                 currentUser = user;
-                try {
-                    const docSnap = await getDoc(doc(membersRef, currentUser.uid));
-                    if (docSnap.exists()) {
-                        myProfile = { id: currentUser.uid, ...docSnap.data() };
-                        startDashboard();
-                    } else {
-                        openProfileModal(false);
-                    }
-                } catch (e) {
-                    console.error("Firestore read error:", e);
-                    showToast("Erreur d'accès à la base de données.");
-                    openProfileModal(false);
+
+                // Start realtime listeners immediately so quick-reconnect list is populated
+                if (!listenersStarted) {
+                    listenersStarted = true;
+                    listenMembers();
+                    listenCars();
+                    listenTasks();
                 }
+
+                if (currentProfileId) {
+                    try {
+                        const docSnap = await getDoc(doc(membersRef, currentProfileId));
+                        if (docSnap.exists()) {
+                            myProfile = { id: currentProfileId, ...docSnap.data() };
+                            startDashboard();
+                            return;
+                        } else {
+                            localStorage.removeItem('xmas2027_profile_id');
+                            currentProfileId = null;
+                        }
+                    } catch (e) {
+                        console.error("Firestore read error:", e);
+                    }
+                }
+                openProfileModal(false);
             });
         }
 
@@ -612,28 +707,30 @@
             }
 
             const name = document.getElementById('p-name').value.trim();
-            const email = document.getElementById('p-email').value.trim();
+            const email = document.getElementById('p-email').value.trim().toLowerCase();
             const deposit = parseFloat(document.getElementById('p-deposit').value) || 0;
             const hasCar = document.getElementById('p-car-check').checked;
             const carSeats = parseInt(document.getElementById('p-seats').value) || 0;
             const tires = document.getElementById('p-tires').checked;
 
             if (!name) { showToast("Saisis au moins ton prénom !"); return; }
-            if (!email) { showToast("L'e-mail est utile pour ton récap !"); return; }
+            if (!email || !email.includes('@')) { showToast("Indique une adresse e-mail valide (elle sert d'identifiant unique) !"); return; }
 
             const btn = document.getElementById('btn-save-profile');
             btn.disabled = true;
 
+            // Use email-based ID so same email = same profile on every device
+            const profileId = getProfileIdFromEmail(email);
             const profileData = { name, email, deposit, hasCar, timestamp: Date.now() };
 
             try {
-                await setDoc(doc(membersRef, currentUser.uid), profileData, { merge: true });
+                await setDoc(doc(membersRef, profileId), profileData, { merge: true });
 
                 if (hasCar && carSeats > 0) {
-                    const existingCarSnap = await getDoc(doc(carsRef, currentUser.uid));
+                    const existingCarSnap = await getDoc(doc(carsRef, profileId));
                     const existingPassengers = existingCarSnap.exists() ? (existingCarSnap.data().passengers || []) : [];
-                    await setDoc(doc(carsRef, currentUser.uid), {
-                        driverId: currentUser.uid,
+                    await setDoc(doc(carsRef, profileId), {
+                        driverId: profileId,
                         driverName: name,
                         totalSeats: carSeats,
                         tires: tires,
@@ -641,13 +738,18 @@
                         timestamp: Date.now()
                     }, { merge: true });
                 } else {
-                    await deleteDoc(doc(carsRef, currentUser.uid)).catch(() => {});
+                    await deleteDoc(doc(carsRef, profileId)).catch(() => {});
                 }
 
-                myProfile = { id: currentUser.uid, ...profileData };
+                currentProfileId = profileId;
+                localStorage.setItem('xmas2027_profile_id', profileId);
+                myProfile = { id: profileId, ...profileData };
                 authModal.classList.add('hidden');
                 startDashboard();
-                showToast("Profil enregistré ! Bienvenue 🥂");
+                renderMembers(allMembersCache);
+                renderCars(allCarsCache);
+                renderTasks(allTasksCache);
+                showToast("Profil enregistré et synchronisé ! Bienvenue 🥂");
             } catch (e) {
                 console.error(e);
                 showToast("Erreur de sauvegarde sur Firebase.");
@@ -662,13 +764,6 @@
             
             document.getElementById('user-avatar').textContent = myProfile.name.substring(0, 2).toUpperCase();
             document.getElementById('header-user-name').textContent = myProfile.name;
-
-            if (!listenersStarted) {
-                listenersStarted = true;
-                listenMembers();
-                listenCars();
-                listenTasks();
-            }
         }
 
         // --- REALTIME LISTENERS (FIREBASE) ---
@@ -678,6 +773,7 @@
                 members.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
                 allMembersCache = members;
                 renderMembers(members);
+                renderQuickReconnect();
             }, e => console.error(e));
         }
 
@@ -727,7 +823,7 @@
             grid.innerHTML = members.map(m => {
                 const initials = escapeHtml((m.name || '?').substring(0, 2).toUpperCase());
                 const deposit = Number(m.deposit) || 0;
-                const isMe = currentUser && m.id === currentUser.uid;
+                const isMe = currentProfileId && m.id === currentProfileId;
 
                 let statusBadge = '';
                 if (deposit >= PER_PERSON_TOTAL) {
@@ -775,8 +871,8 @@
                 const passengers = Array.isArray(car.passengers) ? car.passengers : [];
                 const totalSeats = Number(car.totalSeats) || 0;
                 const freeSeats = Math.max(0, totalSeats - passengers.length);
-                const isDriver = currentUser && car.driverId === currentUser.uid;
-                const amIPassenger = currentUser && passengers.some(p => p.uid === currentUser.uid);
+                const isDriver = currentProfileId && car.driverId === currentProfileId;
+                const amIPassenger = currentProfileId && passengers.some(p => p.uid === currentProfileId);
 
                 const tiresBadge = car.tires
                     ? `<span class="text-[10px] font-semibold bg-teal-900/60 text-teal-300 px-2 py-0.5 rounded-full border border-teal-700/50"><i class="fa-regular fa-snowflake mr-1"></i>Pneus neige</span>`
@@ -793,7 +889,7 @@
                 for (let i = 0; i < totalSeats; i++) {
                     const passenger = passengers[i];
                     if (passenger) {
-                        const isMe = currentUser && passenger.uid === currentUser.uid;
+                        const isMe = currentProfileId && passenger.uid === currentProfileId;
                         slotsHtml += `
                             <div class="flex items-center justify-between gap-2 bg-teal-900/30 border border-teal-700/50 rounded-lg px-2.5 py-2 text-xs">
                                 <div class="flex items-center gap-2 min-w-0">
@@ -833,14 +929,14 @@
         }
 
         window.joinCar = async (carId) => {
-            if (!currentUser || !myProfile) return;
+            if (!currentProfileId || !myProfile) return;
             try {
                 const docRef = doc(carsRef, carId);
                 const carSnap = await getDoc(docRef);
                 if (carSnap.exists()) {
                     let p = carSnap.data().passengers || [];
-                    if (p.length < carSnap.data().totalSeats && !p.some(x => x.uid === currentUser.uid)) {
-                        p.push({ uid: currentUser.uid, name: myProfile.name });
+                    if (p.length < carSnap.data().totalSeats && !p.some(x => x.uid === currentProfileId)) {
+                        p.push({ uid: currentProfileId, name: myProfile.name });
                         await updateDoc(docRef, { passengers: p });
                         showToast("Place réservée dans la voiture ! 🚗");
                     }
@@ -849,7 +945,7 @@
         };
 
         window.leaveCar = async (carId, passUid) => {
-            if (!currentUser) return;
+            if (!currentProfileId) return;
             try {
                 const docRef = doc(carsRef, carId);
                 const carSnap = await getDoc(docRef);
@@ -863,12 +959,12 @@
 
         // --- TASKS / FOOD / DRINKS ---
         async function createTask(type, desc) {
-            if (!desc || !currentUser || !myProfile) return;
+            if (!desc || !currentProfileId || !myProfile) return;
             try {
                 await addDoc(tasksRef, {
                     type,
                     desc,
-                    authorId: currentUser.uid,
+                    authorId: currentProfileId,
                     authorName: myProfile.name,
                     timestamp: Date.now()
                 });
@@ -898,7 +994,7 @@
         };
 
         window.deleteTask = async (id) => {
-            if (!currentUser) return;
+            if (!currentProfileId) return;
             try {
                 await deleteDoc(doc(tasksRef, id));
                 showToast("Retiré de ta liste.");
@@ -981,7 +1077,7 @@
             }).join('');
 
             // 3. My Tasks (Bullet point shopping list)
-            const myTasks = tasks.filter(t => currentUser && t.authorId === currentUser.uid);
+            const myTasks = tasks.filter(t => currentProfileId && t.authorId === currentProfileId);
             if (myTasks.length === 0) {
                 myTasksList.innerHTML = `<li class="text-xs text-zinc-400 italic">Ta liste est vide. Coche des éléments à gauche ou ajoute tes idées !</li>`;
             } else {
@@ -999,7 +1095,7 @@
             }
 
             // 4. Others' Tasks (Grouped by person, bullet points)
-            const othersTasks = tasks.filter(t => !currentUser || t.authorId !== currentUser.uid);
+            const othersTasks = tasks.filter(t => !currentProfileId || t.authorId !== currentProfileId);
             const grouped = {};
             othersTasks.forEach(t => {
                 const key = t.authorName || 'Copine';
@@ -1024,8 +1120,8 @@
 
         // --- SEND PERSONAL RECAP EMAIL ---
         window.sendRecapEmail = function() {
-            if (!myProfile || !currentUser) return;
-            const myTasks = allTasksCache.filter(t => t.authorId === currentUser.uid);
+            if (!myProfile || !currentProfileId) return;
+            const myTasks = allTasksCache.filter(t => t.authorId === currentProfileId);
             const myItemsText = myTasks.length > 0
                 ? myTasks.map(t => `• ${t.desc}`).join('\n')
                 : '• Aucun élément sélectionné pour le moment.';
